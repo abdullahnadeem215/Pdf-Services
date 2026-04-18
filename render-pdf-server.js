@@ -8,10 +8,17 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Adobe PDF to Word endpoint
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    message: 'PDF Service is running'
+  });
+});
+
+// Adobe PDF to Word conversion endpoint
 app.post('/convert-pdf-to-word', upload.single('file'), async (req, res) => {
-  const startTime = Date.now();
-  
   try {
     const { file } = req;
     if (!file) {
@@ -24,10 +31,12 @@ app.post('/convert-pdf-to-word', upload.single('file'), async (req, res) => {
     const clientSecret = process.env.ADOBE_CLIENT_SECRET;
 
     if (!clientId || !clientSecret) {
+      console.error('Adobe credentials missing');
       return res.status(500).json({ error: 'Adobe credentials missing. Set ADOBE_CLIENT_ID and ADOBE_CLIENT_SECRET' });
     }
 
     // 1. Get Adobe Access Token
+    console.log('Getting Adobe token...');
     const tokenRes = await fetch('https://pdf-services.adobe.io/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -40,12 +49,14 @@ app.post('/convert-pdf-to-word', upload.single('file'), async (req, res) => {
 
     const tokenData = await tokenRes.json();
     if (!tokenRes.ok) {
+      console.error('Token error:', tokenData);
       throw new Error(`Adobe token error: ${JSON.stringify(tokenData)}`);
     }
     const accessToken = tokenData.access_token;
     console.log('✅ Adobe token obtained');
 
-    // 2. Upload PDF
+    // 2. Upload PDF to Adobe
+    console.log('Uploading PDF...');
     const uploadRes = await fetch('https://pdf-services.adobe.io/assets', {
       method: 'POST',
       headers: {
@@ -58,12 +69,14 @@ app.post('/convert-pdf-to-word', upload.single('file'), async (req, res) => {
 
     const assetData = await uploadRes.json();
     if (!uploadRes.ok) {
+      console.error('Upload error:', assetData);
       throw new Error(`Upload failed: ${JSON.stringify(assetData)}`);
     }
     const assetId = assetData.assetID;
     console.log('✅ PDF uploaded, asset ID:', assetId);
 
     // 3. Convert to Word
+    console.log('Converting to Word...');
     const convertRes = await fetch('https://pdf-services.adobe.io/operation/exportpdf', {
       method: 'POST',
       headers: {
@@ -78,6 +91,7 @@ app.post('/convert-pdf-to-word', upload.single('file'), async (req, res) => {
 
     const jobData = await convertRes.json();
     if (!convertRes.ok) {
+      console.error('Conversion error:', jobData);
       throw new Error(`Conversion failed: ${JSON.stringify(jobData)}`);
     }
     const jobId = jobData.jobID;
@@ -89,6 +103,7 @@ app.post('/convert-pdf-to-word', upload.single('file'), async (req, res) => {
     let attempts = 0;
     const maxAttempts = 30;
 
+    console.log('Polling for completion...');
     while (status !== 'done' && attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, 2000));
       
@@ -110,15 +125,16 @@ app.post('/convert-pdf-to-word', upload.single('file'), async (req, res) => {
     }
     console.log('✅ Conversion complete');
 
-    // 5. Download result
+    // 5. Download the converted file
+    console.log('Downloading converted file...');
     const downloadRes = await fetch(`https://pdf-services.adobe.io/asset/${resultUrl}/content`, {
       headers: { 'Authorization': `Bearer ${accessToken}` }
     });
 
     const docxBuffer = await downloadRes.buffer();
-    const endTime = Date.now();
-    console.log(`Total time: ${(endTime - startTime) / 1000} seconds`);
+    console.log(`✅ Download complete, size: ${(docxBuffer.length / 1024 / 1024).toFixed(2)} MB`);
 
+    // Send response
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.setHeader('Content-Disposition', 'attachment; filename="converted.docx"');
     res.send(docxBuffer);
@@ -129,20 +145,21 @@ app.post('/convert-pdf-to-word', upload.single('file'), async (req, res) => {
   }
 });
 
-// Health check endpoint
-app.get('/health', (req, res) => {
+// Root endpoint
+app.get('/', (req, res) => {
   res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    env: {
-      hasAdobeId: !!process.env.ADOBE_CLIENT_ID,
-      hasAdobeSecret: !!process.env.ADOBE_CLIENT_SECRET
+    message: 'PDF Services API is running',
+    endpoints: {
+      health: '/health',
+      convert: '/convert-pdf-to-word (POST)'
     }
   });
 });
 
+// Start server
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`✅ Adobe PDF service running on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ PDF Service server running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`Convert endpoint: http://localhost:${PORT}/convert-pdf-to-word`);
 });
